@@ -200,7 +200,7 @@ class HITLGmailAgent:
 
         attachments = [Path(p) for p in (resume_pdf_path, resume_docx_path) if p]
         delivery = self.gmail.send_html_email(
-            to_email=self.settings.candidate_email,
+            to_email=self.settings.notify_emails or self.settings.candidate_email,
             subject=subject,
             html_body=html_body,
             attachments=attachments,
@@ -290,10 +290,13 @@ class HITLGmailAgent:
             f"assessments and $28M in operational/fraud risk events."
         )
 
-    def send_daily_digest(self, date_str: str | None = None) -> dict[str, Any]:
-        """Renders and sends the 4-section HTML End-of-Day Daily Digest to `Erykasmith@gmail.com`."""
+    def send_daily_digest(
+        self, date_str: str | None = None, to_email: str | None = None
+    ) -> dict[str, Any]:
+        """Renders and sends the 4-section HTML End-of-Day Daily Digest to configured recipients."""
         now_cst = datetime.now(ZoneInfo(self.settings.timezone))
         display_date = date_str or now_cst.strftime("%Y-%m-%d")
+        recipients = to_email or self.settings.notify_emails or self.settings.candidate_email
 
         submitted_rows = self.db.get_submitted_today()
         pending_hitl = self.db.get_pending_hitl_applications()
@@ -435,7 +438,7 @@ class HITLGmailAgent:
 </html>"""
 
         delivery = self.gmail.send_html_email(
-            to_email=self.settings.candidate_email,
+            to_email=recipients,
             subject=subject,
             html_body=html_body,
             tag=f"daily_digest_{display_date}",

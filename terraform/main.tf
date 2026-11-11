@@ -1,5 +1,7 @@
 locals {
   required_services = toset([
+    "serviceusage.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
     "run.googleapis.com",
     "cloudscheduler.googleapis.com",
     "cloudbuild.googleapis.com",
@@ -7,6 +9,7 @@ locals {
     "storage.googleapis.com",
     "secretmanager.googleapis.com",
     "iam.googleapis.com",
+    "gmail.googleapis.com",
   ])
 
   bucket_name     = "${var.project_id}-get-hired-data"

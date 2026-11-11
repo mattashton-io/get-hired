@@ -79,22 +79,55 @@ class GmailClient:
     def _get_service(self) -> Any | None:
         if self._service is not None:
             return self._service
-        if not self.token_path.exists():
-            return None
-        try:
-            from google.auth.transport.requests import Request
-            from google.oauth2.credentials import Credentials
-            from googleapiclient.discovery import build
 
-            creds = Credentials.from_authorized_user_file(str(self.token_path), GMAIL_SCOPES)
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                self.token_path.write_text(creds.to_json(), encoding="utf-8")
-            if creds and creds.valid:
-                self._service = build("gmail", "v1", credentials=creds)
+        import os
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        candidate_token_paths = [
+            self.token_path,
+            self.settings.data_dir / "gmail_token.json",
+        ]
+        for tpath in candidate_token_paths:
+            if tpath.exists():
+                try:
+                    creds = Credentials.from_authorized_user_file(str(tpath), GMAIL_SCOPES)
+                    if creds and creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+                        tpath.write_text(creds.to_json(), encoding="utf-8")
+                    if creds and creds.valid:
+                        self._service = build("gmail", "v1", credentials=creds)
+                        return self._service
+                except Exception as exc:
+                    logger.warning("Gmail OAuth token load warning (%s): %s", tpath, exc)
+
+        token_json_env = os.getenv("GMAIL_TOKEN_JSON", "").strip()
+        if token_json_env:
+            try:
+                info = json.loads(token_json_env)
+                creds = Credentials.from_authorized_user_info(info, GMAIL_SCOPES)
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                if creds and creds.valid:
+                    self._service = build("gmail", "v1", credentials=creds)
+                    return self._service
+            except Exception as exc:
+                logger.warning("GMAIL_TOKEN_JSON env load warning: %s", exc)
+
+        # Try Application Default Credentials if configured with gmail scopes
+        try:
+            import google.auth
+
+            adc_creds, _ = google.auth.default(scopes=GMAIL_SCOPES)
+            if adc_creds:
+                if not adc_creds.valid:
+                    adc_creds.refresh(Request())
+                self._service = build("gmail", "v1", credentials=adc_creds)
                 return self._service
         except Exception as exc:
-            logger.warning("Gmail OAuth token load warning: %s", exc)
+            logger.debug("ADC Gmail fallback not available: %s", exc)
+
         return None
 
     def send_html_email(
@@ -137,21 +170,50 @@ class GmailClient:
         eml_path.write_bytes(msg.as_bytes())
 
         service = None if self.settings.dry_run else self._get_service()
+        thread_id = f"thread-{short_id}"
+        message_id = f"msg-{short_id}"
+        mode = "dry_run_outbox" if self.settings.dry_run else "local_outbox_pending_oauth"
+
         if service is not None:
-            raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-            sent = (
-                service.users()
-                .messages()
-                .send(userId="me", body={"raw": raw_b64})
-                .execute()
-            )
-            thread_id = sent.get("threadId") or sent.get("id")
-            message_id = sent.get("id", "")
-            mode = "gmail_api_live"
-        else:
-            thread_id = f"thread-{short_id}"
-            message_id = f"msg-{short_id}"
-            mode = "dry_run_outbox" if self.settings.dry_run else "local_outbox_pending_oauth"
+            try:
+                raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+                sent = (
+                    service.users()
+                    .messages()
+                    .send(userId="me", body={"raw": raw_b64})
+                    .execute()
+                )
+                thread_id = sent.get("threadId") or sent.get("id")
+                message_id = sent.get("id", "")
+                mode = "gmail_api_live"
+            except Exception as exc:
+                logger.warning("Live Gmail API send failed (%s); checking SMTP fallback.", exc)
+
+        if (
+            mode != "gmail_api_live"
+            and not self.settings.dry_run
+            and self.settings.gmail_app_password
+        ):
+            try:
+                import smtplib
+
+                recipients = [
+                    addr.strip() for addr in to_email.split(",") if addr.strip()
+                ]
+                with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
+                    smtp.starttls()
+                    smtp.login(
+                        self.settings.gmail_sender_email,
+                        self.settings.gmail_app_password,
+                    )
+                    smtp.sendmail(
+                        self.settings.gmail_sender_email,
+                        recipients,
+                        msg.as_bytes(),
+                    )
+                mode = "gmail_smtp_live"
+            except Exception as exc:
+                logger.warning("Gmail SMTP fallback failed: %s", exc)
 
         self._record_outbox_thread(
             thread_id=thread_id,

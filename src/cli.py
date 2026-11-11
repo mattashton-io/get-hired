@@ -34,7 +34,13 @@ def main(argv: list[str] | None = None) -> int:
     proc_p.add_argument("--jitter", action="store_true", help="Enable 25-55 min staggered sleep.")
 
     subparsers.add_parser("poll-hitl", help="Poll Gmail HITL threads once and execute approvals.")
-    subparsers.add_parser("digest", help="Generate and send the HTML EOD Daily Digest.")
+    dig_p = subparsers.add_parser("digest", help="Generate and send the HTML EOD Daily Digest.")
+    dig_p.add_argument(
+        "--to",
+        type=str,
+        default=None,
+        help="Comma-separated recipient email addresses (defaults to NOTIFY_EMAILS).",
+    )
     subparsers.add_parser("dry-run", help="Execute full Phase 7 End-to-End Dry Run & verification.")
     subparsers.add_parser("verify-schedules", help="Print configured CST cron triggers and exit.")
     subparsers.add_parser("daemon", help="Start the persistent APScheduler daily daemon.")
@@ -84,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "digest":
-        print(json.dumps(orch.hitl.send_daily_digest(), indent=2))
+        print(json.dumps(orch.hitl.send_daily_digest(to_email=args.to), indent=2))
         return 0
 
     if args.command == "dry-run":

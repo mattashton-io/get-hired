@@ -131,12 +131,15 @@ info "================================================================="
 # 4. Enable Required GCP APIs
 info "Enabling required Google Cloud APIs..."
 gcloud services enable \
+    serviceusage.googleapis.com \
+    cloudresourcemanager.googleapis.com \
     run.googleapis.com \
     cloudscheduler.googleapis.com \
     cloudbuild.googleapis.com \
     artifactregistry.googleapis.com \
     storage.googleapis.com \
     iam.googleapis.com \
+    gmail.googleapis.com \
     --project="$PROJECT_ID"
 ok "APIs enabled."
 
@@ -192,7 +195,7 @@ COMMON_JOB_FLAGS=(
     "--memory=2Gi"
     "--max-retries=1"
     "--task-timeout=15m"
-    "--set-env-vars=GEMINI_API_KEY=${GEMINI_API_KEY},GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash},GOOGLE_CLOUD_PROJECT_ID=${PROJECT_ID},GOOGLE_CLOUD_REGION=${REGION},TZ=${TIMEZONE}"
+    "--set-env-vars=^;^GEMINI_API_KEY=${GEMINI_API_KEY};GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash};GOOGLE_CLOUD_PROJECT_ID=${PROJECT_ID};GOOGLE_CLOUD_REGION=${REGION};TZ=${TIMEZONE};NOTIFY_EMAILS=${NOTIFY_EMAILS:-Erykasmith@gmail.com,ashton0801@gmail.com}"
     "--add-volume=name=gcs-data,type=cloud-storage,bucket=${BUCKET_NAME}"
     "--add-volume-mount=volume=gcs-data,mount-path=/app/data"
 )

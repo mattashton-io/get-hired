@@ -73,9 +73,20 @@ class Settings:
         default_factory=_resolve_default_gcp_region
     )
 
-    # Gmail OAuth2 configuration
+    # Gmail OAuth2 & Notification configuration
     candidate_email: str = field(
         default_factory=lambda: os.getenv("CANDIDATE_EMAIL", "Erykasmith@gmail.com")
+    )
+    notify_emails: str = field(
+        default_factory=lambda: os.getenv(
+            "NOTIFY_EMAILS", "Erykasmith@gmail.com,ashton0801@gmail.com"
+        )
+    )
+    gmail_app_password: str = field(
+        default_factory=lambda: os.getenv("GMAIL_APP_PASSWORD", "")
+    )
+    gmail_sender_email: str = field(
+        default_factory=lambda: os.getenv("GMAIL_SENDER_EMAIL", "ashton0801@gmail.com")
     )
     gmail_credentials_path: Path = field(
         default_factory=lambda: Path(
