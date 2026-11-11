@@ -28,3 +28,4 @@ Autonomously navigate employer career portals and Applicant Tracking Systems (Wo
 Upon clicking final submit:
 1. Capture a full-page confirmation screenshot and extract any confirmation receipt email/ID.
 2. Update `application_state_db` with `status = "SUBMITTED"`, timestamp, resume version hash, and screenshot path for inclusion in the evening digest.
+

@@ -1,6 +1,13 @@
 applicant/ref/*
 applicant/resume/*
 task.md
+persona.md
+data/
+credentials.json
+token.json
+config/*credentials*.json
+config/*token*.json
+client_secret*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

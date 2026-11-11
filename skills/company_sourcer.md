@@ -38,3 +38,4 @@ Continuously discover, verify, and append small, diverse, and certified employer
   "last_checked_at": "ISO-8601 Timestamp"
 }
 ```
+

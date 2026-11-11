@@ -42,6 +42,7 @@ Scrape open requisitions from `target_companies.json` and public job aggregators
   * Triggers any `hard_disqualifiers` (e.g., non-waiverable Top Secret/SCI clearance or mandatory license the candidate does not hold without equivalency): **-35 pts**
 
 ## 6. Routing & Output Queue
-* **`score >= 85` (Tier 1 - Auto-Execute Eligible):** Route to `resume-tailor` $\rightarrow$ `truth-verifier` $\rightarrow$ `ats-applicator` (up to daily cap of ~10 applications).
-* **`75 <= score < 85` (Tier 2 - HITL Review Eligible):** Route to `resume-tailor` $\rightarrow$ `truth-verifier` $\rightarrow$ `hitl-gmail-comms` for human approval if needed to fill the daily quota or if high strategic value.
+* **`score >= 85` (Tier 1 - Auto-Execute Eligible):** Route to `resume-tailor` -> `truth-verifier` -> `ats-applicator` (up to daily cap of ~10 applications).
+* **`75 <= score < 85` (Tier 2 - HITL Review Eligible):** Route to `resume-tailor` -> `truth-verifier` -> `hitl-gmail-comms` for human approval if needed to fill the daily quota or if high strategic value.
 * **`score < 75`:** Log and discard.
+

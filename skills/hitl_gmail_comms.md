@@ -40,3 +40,4 @@ Send a formatted HTML summary email with subject:
    * Certified small businesses discovered by `company-sourcer` that match the candidate's profile but have no public job postings, complete with a pre-drafted, verified cold outreach message for LinkedIn or email.
 4. **Section 4: Pipeline Telemetry**
    * Total companies scanned, roles evaluated, roles filtered out (with top rejection reasons, e.g., salary `< hard_floor`), and verifier pass rate.
+

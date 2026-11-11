@@ -35,3 +35,4 @@ Return a structured JSON object containing:
 1. `tailored_resume_markdown`: Complete markdown representation ready for `.docx`/`.pdf` compilation.
 2. `tailored_cover_note`: Short pitch for ATS text fields or recruiter emails.
 3. `modification_log`: Explicit list of changes made relative to `master_resume` for inspection by `truth-verifier`.
+

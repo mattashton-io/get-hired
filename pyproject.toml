@@ -1,0 +1,15 @@
+[project]
+name = "get-hired"
+version = "0.1.0"
+description = "Autonomous Job Discovery, Zero-Hallucination Tailoring & Application Agent"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::SyntaxWarning:google.genai.*",
+]
+
