@@ -1,6 +1,6 @@
 applicant/ref/*
 applicant/resume/*
-applicant/skills/*
+task.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
