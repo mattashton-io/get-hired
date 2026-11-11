@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,37 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
+
+
+def _resolve_default_gcp_region() -> str:
+    """Resolve GCP region from env or gcloud config without hardcoding."""
+    env_region = os.getenv("GOOGLE_CLOUD_REGION") or os.getenv("CLOUDSDK_COMPUTE_REGION") or os.getenv("CLOUDSDK_RUN_REGION")
+    if env_region:
+        return env_region.strip()
+    for prop in ("run/region", "compute/region"):
+        try:
+            val = subprocess.check_output(
+                ["gcloud", "config", "get-value", prop],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            ).strip()
+            if val and val != "(unset)":
+                return val
+        except Exception:
+            pass
+    try:
+        zone = subprocess.check_output(
+            ["gcloud", "config", "get-value", "compute/zone"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        ).strip()
+        if zone and zone != "(unset)" and "-" in zone:
+            return zone.rsplit("-", 1)[0]
+    except Exception:
+        pass
+    return ""
 
 
 @dataclass
@@ -37,7 +70,7 @@ class Settings:
         default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT_ID", "")
     )
     google_cloud_region: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
+        default_factory=_resolve_default_gcp_region
     )
 
     # Gmail OAuth2 configuration
@@ -86,6 +119,17 @@ class Settings:
         self.outbox_dir.mkdir(parents=True, exist_ok=True)
         self.session_states_dir.mkdir(parents=True, exist_ok=True)
         (self.project_root / "config").mkdir(parents=True, exist_ok=True)
+
+        # If /app/data is a freshly mounted GCS FUSE volume, hydrate seed JSON files
+        seed_dir = self.project_root / "seed_data"
+        if seed_dir.is_dir():
+            for fname, target in (
+                ("master_resume.json", self.master_resume_path),
+                ("target_companies.json", self.target_companies_path),
+            ):
+                src_file = seed_dir / fname
+                if not target.exists() and src_file.exists():
+                    shutil.copy2(src_file, target)
 
     def load_persona_text(self) -> str:
         return self.persona_path.read_text(encoding="utf-8")

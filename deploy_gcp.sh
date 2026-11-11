@@ -3,8 +3,8 @@
 # deploy_gcp.sh - Automated Scale-to-Zero GCP Deployment for get-hired
 #
 # Architecture:
-#   - Cloud Run Jobs: Runs batch tasks in seconds and terminates (scales to 0)
-#   - Cloud Storage FUSE: Mounts gs://${BUCKET} to /app/data for SQLite & resumes
+#   - Cloud Run Jobs: Executes batch tasks in seconds and terminates (0 idle instances)
+#   - Cloud Storage FUSE: Mounts gs://${BUCKET_NAME} to /app/data for SQLite & resumes
 #   - Cloud Scheduler: Dispatches CST cron triggers to Cloud Run Jobs
 #   - Monthly Cost: $0.00 / month (100% covered by GCP Free Tier)
 # ==============================================================================
@@ -16,7 +16,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
 ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -26,71 +26,138 @@ err()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 2. Load .env if present
+# Ensure gcloud is on PATH (including Homebrew location on macOS)
+if ! command -v gcloud &>/dev/null && [[ -x "/opt/homebrew/share/google-cloud-sdk/bin/gcloud" ]]; then
+    export PATH="/opt/homebrew/share/google-cloud-sdk/bin:$PATH"
+fi
+
+# 2. Load .env if present (preserving any explicit CLI environment overrides)
+CLI_REGION="${GOOGLE_CLOUD_REGION:-}"
+CLI_PROJECT="${GOOGLE_CLOUD_PROJECT_ID:-}"
+
 if [[ -f .env ]]; then
-    info "Loading configurations from .env..."
-    # Export variables from .env
+    info "Loading environment variables from .env..."
     set -a
     # shellcheck disable=SC1091
     source .env
     set +a
 fi
 
-PROJECT_ID="${GOOGLE_CLOUD_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || echo "")}"
-REGION="${GOOGLE_CLOUD_REGION:-us-south1}"
-TIMEZONE="America/Chicago"
+# 3. Dynamic Project & Region Resolution via gcloud config (no hardcoded region)
+resolve_gcp_project() {
+    if [[ -n "$CLI_PROJECT" ]]; then
+        echo "$CLI_PROJECT"
+        return
+    fi
+    local gcloud_proj
+    gcloud_proj="$(gcloud config get-value project 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -n "$gcloud_proj" && "$gcloud_proj" != "(unset)" ]]; then
+        echo "$gcloud_proj"
+        return
+    fi
+    if [[ -n "${GOOGLE_CLOUD_PROJECT_ID:-}" ]]; then
+        echo "${GOOGLE_CLOUD_PROJECT_ID}"
+        return
+    fi
+    echo ""
+}
+
+resolve_gcp_region() {
+    # Priority 1: Explicit CLI env override
+    if [[ -n "$CLI_REGION" ]]; then
+        echo "$CLI_REGION"
+        return
+    fi
+    # Priority 2: gcloud config run/region
+    local r
+    r="$(gcloud config get-value run/region 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -n "$r" && "$r" != "(unset)" ]]; then
+        echo "$r"
+        return
+    fi
+    # Priority 3: gcloud config compute/region
+    r="$(gcloud config get-value compute/region 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -n "$r" && "$r" != "(unset)" ]]; then
+        echo "$r"
+        return
+    fi
+    # Priority 4: Derive region from gcloud config compute/zone (e.g. us-central1-c -> us-central1)
+    local z
+    z="$(gcloud config get-value compute/zone 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -n "$z" && "$z" != "(unset)" && "$z" == *-* ]]; then
+        echo "${z%-*}"
+        return
+    fi
+    # Priority 5: GOOGLE_CLOUD_REGION from .env
+    if [[ -n "${GOOGLE_CLOUD_REGION:-}" ]]; then
+        echo "${GOOGLE_CLOUD_REGION}"
+        return
+    fi
+    echo ""
+}
+
+PROJECT_ID="$(resolve_gcp_project)"
+REGION="$(resolve_gcp_region)"
+TIMEZONE="${SCHEDULER_TIMEZONE:-America/Chicago}"
 
 if [[ -z "$PROJECT_ID" ]]; then
-    err "No GCP project detected. Set GOOGLE_CLOUD_PROJECT_ID in .env or run: gcloud config set project <PROJECT_ID>"
+    err "Could not determine GCP Project ID. Run 'gcloud config set project <PROJECT_ID>' or set GOOGLE_CLOUD_PROJECT_ID."
+fi
+
+if [[ -z "$REGION" ]]; then
+    err "Could not determine GCP Region. Run 'gcloud config set run/region <REGION>' (or compute/region) or set GOOGLE_CLOUD_REGION."
 fi
 
 if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-    err "GEMINI_API_KEY is not set in .env. Please add it before deploying."
+    err "GEMINI_API_KEY is not set. Add GEMINI_API_KEY to .env or export it in your shell before deploying."
 fi
 
 BUCKET_NAME="${PROJECT_ID}-get-hired-data"
-IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/get-hired-repo/agent:latest"
+AR_REPO_NAME="get-hired-repo"
+IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO_NAME}/agent:latest"
 JOB_NAME="get-hired-runner"
-SERVICE_ACCOUNT="get-hired-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
+SA_NAME="get-hired-scheduler"
+SERVICE_ACCOUNT="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
 info "================================================================="
-info " Deploying 'get-hired' to Google Cloud (Scale-to-Zero Architecture)"
+info " Deploying 'get-hired' to Google Cloud (Scale-to-Zero Jobs)"
 info " Project:         $PROJECT_ID"
-info " Region:          $REGION"
+info " Region:          $REGION (resolved dynamically)"
 info " Data Bucket:     gs://$BUCKET_NAME"
 info " Container Image: $IMAGE_NAME"
 info " Timezone:        $TIMEZONE"
 info "================================================================="
 
-# 3. Enable Required GCP APIs
-info "Enabling required GCP APIs..."
+# 4. Enable Required GCP APIs
+info "Enabling required Google Cloud APIs..."
 gcloud services enable \
     run.googleapis.com \
     cloudscheduler.googleapis.com \
     cloudbuild.googleapis.com \
     artifactregistry.googleapis.com \
     storage.googleapis.com \
+    iam.googleapis.com \
     --project="$PROJECT_ID"
 ok "APIs enabled."
 
-# 4. Create Artifact Registry Repository (if it doesn't exist)
-info "Checking Artifact Registry repository..."
-if ! gcloud artifacts repositories describe get-hired-repo --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
-    info "Creating Artifact Registry repo 'get-hired-repo' in $REGION..."
-    gcloud artifacts repositories create get-hired-repo \
+# 5. Create Artifact Registry Repository (if not exists)
+info "Checking Artifact Registry repository '$AR_REPO_NAME' in $REGION..."
+if ! gcloud artifacts repositories describe "$AR_REPO_NAME" --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+    info "Creating Artifact Registry repository '$AR_REPO_NAME' in $REGION..."
+    gcloud artifacts repositories create "$AR_REPO_NAME" \
         --repository-format=docker \
         --location="$REGION" \
-        --description="Docker repository for get-hired agents" \
+        --description="Docker repository for get-hired autonomous job agent" \
         --project="$PROJECT_ID"
     ok "Artifact Registry repository created."
 else
-    ok "Artifact Registry repository already exists."
+    ok "Artifact Registry repository exists."
 fi
 
-# 5. Create Cloud Storage Bucket for SQLite & Resumes
-info "Checking GCS bucket gs://$BUCKET_NAME..."
+# 6. Create Cloud Storage Bucket & Seed Initial State
+info "Checking Cloud Storage bucket gs://$BUCKET_NAME..."
 if ! gcloud storage buckets describe "gs://$BUCKET_NAME" --project="$PROJECT_ID" &>/dev/null; then
-    info "Creating Cloud Storage bucket gs://$BUCKET_NAME..."
+    info "Creating Cloud Storage bucket gs://$BUCKET_NAME in $REGION..."
     gcloud storage buckets create "gs://$BUCKET_NAME" \
         --location="$REGION" \
         --project="$PROJECT_ID" \
@@ -100,71 +167,62 @@ else
     ok "GCS bucket exists."
 fi
 
-# Seed initial files into bucket if bucket is empty
-if [[ -f data/applications_ledger.db ]]; then
-    info "Syncing local database to GCS bucket as initial state..."
-    gcloud storage cp data/applications_ledger.db "gs://$BUCKET_NAME/applications_ledger.db" --project="$PROJECT_ID" 2>/dev/null || true
-    ok "Initial ledger synced."
-fi
+for seed_file in master_resume.json target_companies.json applications_ledger.db; do
+    if [[ -f "data/${seed_file}" ]]; then
+        if ! gcloud storage ls "gs://${BUCKET_NAME}/${seed_file}" --project="$PROJECT_ID" &>/dev/null; then
+            info "Seeding data/${seed_file} -> gs://${BUCKET_NAME}/${seed_file}..."
+            gcloud storage cp "data/${seed_file}" "gs://${BUCKET_NAME}/${seed_file}" --project="$PROJECT_ID"
+        fi
+    fi
+done
+ok "GCS persistence volume seeded."
 
-# 6. Build and Push Container Image with Cloud Build
-info "Building container image with Google Cloud Build..."
+# 7. Build and Push Container Image with Cloud Build
+info "Building container image via Cloud Build..."
 gcloud builds submit --tag "$IMAGE_NAME" --project="$PROJECT_ID" .
-ok "Container image built and pushed to $IMAGE_NAME"
+ok "Container image built and pushed: $IMAGE_NAME"
 
-# 7. Create or Update Cloud Run Job
-info "Deploying Cloud Run Job '$JOB_NAME' with GCS Volume Mount..."
+# 8. Create or Update Cloud Run Job with GCS Volume Mount
+info "Deploying Cloud Run Job '$JOB_NAME' in $REGION..."
+COMMON_JOB_FLAGS=(
+    "--image=$IMAGE_NAME"
+    "--region=$REGION"
+    "--project=$PROJECT_ID"
+    "--cpu=1"
+    "--memory=2Gi"
+    "--max-retries=1"
+    "--task-timeout=15m"
+    "--set-env-vars=GEMINI_API_KEY=${GEMINI_API_KEY},GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash},GOOGLE_CLOUD_PROJECT_ID=${PROJECT_ID},GOOGLE_CLOUD_REGION=${REGION},TZ=${TIMEZONE}"
+    "--add-volume=name=gcs-data,type=cloud-storage,bucket=${BUCKET_NAME}"
+    "--add-volume-mount=volume=gcs-data,mount-path=/app/data"
+)
+
 if gcloud run jobs describe "$JOB_NAME" --region="$REGION" --project="$PROJECT_ID" &>/dev/null; then
-    info "Updating existing Cloud Run Job..."
-    gcloud run jobs update "$JOB_NAME" \
-        --image="$IMAGE_NAME" \
-        --region="$REGION" \
-        --project="$PROJECT_ID" \
-        --cpu=1 \
-        --memory=2Gi \
-        --max-retries=1 \
-        --task-timeout=15m \
-        --set-env-vars="GEMINI_API_KEY=${GEMINI_API_KEY},TZ=${TIMEZONE}" \
-        --add-volume="name=gcs-data,type=cloud-storage,bucket=${BUCKET_NAME}" \
-        --add-volume-mount="volume=gcs-data,mount-path=/app/data"
+    gcloud run jobs update "$JOB_NAME" "${COMMON_JOB_FLAGS[@]}"
 else
-    info "Creating new Cloud Run Job..."
-    gcloud run jobs create "$JOB_NAME" \
-        --image="$IMAGE_NAME" \
-        --region="$REGION" \
-        --project="$PROJECT_ID" \
-        --cpu=1 \
-        --memory=2Gi \
-        --max-retries=1 \
-        --task-timeout=15m \
-        --set-env-vars="GEMINI_API_KEY=${GEMINI_API_KEY},TZ=${TIMEZONE}" \
-        --add-volume="name=gcs-data,type=cloud-storage,bucket=${BUCKET_NAME}" \
-        --add-volume-mount="volume=gcs-data,mount-path=/app/data"
+    gcloud run jobs create "$JOB_NAME" "${COMMON_JOB_FLAGS[@]}"
 fi
-ok "Cloud Run Job '$JOB_NAME' configured with GCS volume mount at /app/data."
+ok "Cloud Run Job '$JOB_NAME' deployed with GCS FUSE mount at /app/data."
 
-# 8. Setup Dedicated Service Account for Cloud Scheduler
-info "Configuring Service Account for Cloud Scheduler..."
+# 9. Configure Dedicated Service Account for Cloud Scheduler
+info "Configuring Service Account '$SERVICE_ACCOUNT'..."
 if ! gcloud iam service-accounts describe "$SERVICE_ACCOUNT" --project="$PROJECT_ID" &>/dev/null; then
-    gcloud iam service-accounts create get-hired-scheduler \
-        --display-name="Get Hired Cloud Scheduler Service Account" \
+    gcloud iam service-accounts create "$SA_NAME" \
+        --display-name="Get Hired Cloud Scheduler Invoker" \
         --project="$PROJECT_ID"
 fi
 
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$SERVICE_ACCOUNT" \
-    --role="roles/run.invoker" \
-    --condition=None --quiet >/dev/null
+for role in "roles/run.invoker" "roles/run.developer"; do
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:${SERVICE_ACCOUNT}" \
+        --role="$role" \
+        --condition=None \
+        --quiet >/dev/null
+done
+ok "Service account IAM bindings verified."
 
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$SERVICE_ACCOUNT" \
-    --role="roles/run.developer" \
-    --condition=None --quiet >/dev/null
-ok "Service account configured with run.invoker and run.developer."
-
-# 9. Create Cloud Scheduler Triggers
-info "Configuring Cloud Scheduler jobs (matching CST schedule)..."
-
+# 10. Provision Cloud Scheduler Triggers
+info "Configuring Cloud Scheduler jobs ($TIMEZONE)..."
 JOB_RUN_URL="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
 
 create_or_update_schedule() {
@@ -174,76 +232,75 @@ create_or_update_schedule() {
     local cli_args="$4"
 
     local body_json
-    body_json=$(python3 -c "
+    body_json="$(python3 -c "
 import json, sys
 args = sys.argv[1].split()
 print(json.dumps({'overrides': {'containerOverrides': [{'args': args}]}}))
-" "$cli_args")
+" "$cli_args")"
+
+    local sched_flags=(
+        "--location=$REGION"
+        "--project=$PROJECT_ID"
+        "--schedule=$cron_expr"
+        "--time-zone=$TIMEZONE"
+        "--description=$description"
+        "--uri=$JOB_RUN_URL"
+        "--http-method=POST"
+        "--oauth-service-account-email=$SERVICE_ACCOUNT"
+        "--message-body=$body_json"
+        "--headers=Content-Type=application/json"
+        "--quiet"
+    )
 
     if gcloud scheduler jobs describe "$sched_name" --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
-        gcloud scheduler jobs update http "$sched_name" \
-            --location="$REGION" \
-            --project="$PROJECT_ID" \
-            --schedule="$cron_expr" \
-            --time-zone="$TIMEZONE" \
-            --description="$description" \
-            --uri="$JOB_RUN_URL" \
-            --http-method=POST \
-            --oauth-service-account-email="$SERVICE_ACCOUNT" \
-            --message-body="$body_json" \
-            --headers="Content-Type=application/json" \
-            --quiet
+        gcloud scheduler jobs update http "$sched_name" "${sched_flags[@]}"
     else
-        gcloud scheduler jobs create http "$sched_name" \
-            --location="$REGION" \
-            --project="$PROJECT_ID" \
-            --schedule="$cron_expr" \
-            --time-zone="$TIMEZONE" \
-            --description="$description" \
-            --uri="$JOB_RUN_URL" \
-            --http-method=POST \
-            --oauth-service-account-email="$SERVICE_ACCOUNT" \
-            --message-body="$body_json" \
-            --headers="Content-Type=application/json" \
-            --quiet
+        gcloud scheduler jobs create http "$sched_name" "${sched_flags[@]}"
     fi
-    ok "Schedule '$sched_name' configured: $cron_expr CST -> [ $cli_args ]"
+    ok "Schedule '$sched_name' ($cron_expr $TIMEZONE) -> [ $cli_args ]"
 }
 
-# 1. 06:00 CST - Morning Sourcing & Matching
+# 06:00 AM CST - Employer Sourcing
 create_or_update_schedule \
     "get-hired-daily-source" \
     "0 6 * * 1-5" \
-    "Morning certified employer discovery and job scoring" \
+    "06:00 CST morning certified employer discovery" \
     "source"
 
-# 2. 08:00 to 16:00 CST - Hourly Application Worker (2 roles/hr)
+# 06:15 AM CST - Requisition Scraping & Deterministic Scoring
+create_or_update_schedule \
+    "get-hired-daily-score" \
+    "15 6 * * 1-5" \
+    "06:15 CST morning job matching and scoring queue population" \
+    "score"
+
+# 08:00 AM to 04:00 PM CST - Staggered Application Queue Worker
 create_or_update_schedule \
     "get-hired-hourly-queue" \
     "0 8-16 * * 1-5" \
-    "Hourly application pipeline queue worker (tailor, verify, apply)" \
+    "Hourly application pipeline worker (tailor, verify, compile, apply/HITL)" \
     "process-queue --max-items 2"
 
-# 3. Every 30 minutes from 08:00 to 18:00 CST - HITL Gmail Thread Poller
+# Every 15 minutes (08:00 AM to 08:00 PM CST) - HITL Gmail Reply Poller
 create_or_update_schedule \
     "get-hired-poll-hitl" \
-    "*/30 8-18 * * 1-5" \
-    "Poll Eryka's Gmail approval responses and execute approved actions" \
+    "*/15 8-20 * * 1-5" \
+    "Poll Gmail HITL approval replies every 15 minutes and execute approved submissions" \
     "poll-hitl"
 
-# 4. 18:00 CST - EOD Daily Digest
+# 06:00 PM CST - End-of-Day HTML Daily Digest
 create_or_update_schedule \
     "get-hired-daily-digest" \
     "0 18 * * 1-5" \
-    "EOD executive metrics daily digest email" \
+    "18:00 CST End-of-Day executive metrics Daily Digest email" \
     "digest"
 
 info "================================================================="
-ok " Deployment Complete!"
-info " Total Server Cost: \$0.00 / month (Scales to 0 when idle)"
-info " Data Bucket:       gs://${BUCKET_NAME}"
-info " Cloud Run Job:     ${JOB_NAME} (${REGION})"
-info " To test execute now:"
-echo "   gcloud run jobs execute ${JOB_NAME} --region=${REGION} --args=\"dry-run\""
+ok " Deployment Complete! (Scales to 0 when idle)"
+info " Project:       $PROJECT_ID"
+info " Region:        $REGION"
+info " Data Bucket:   gs://$BUCKET_NAME"
+info " Cloud Run Job: $JOB_NAME"
+info " Manual Test Command:"
+echo "   gcloud run jobs execute ${JOB_NAME} --region=${REGION} --project=${PROJECT_ID} --args=\"dry-run\""
 info "================================================================="
-

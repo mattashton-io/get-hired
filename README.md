@@ -56,13 +56,16 @@ python -m src.cli auth-gmail
 ./run.sh install-service
 ```
 
-### 4. Cloud Run Scale-to-Zero Deployment (GCP)
+### 4. Cloud Run Scale-to-Zero Deployment (`./deploy_gcp.sh` or `terraform/`)
 For 24/7 autonomous operation without leaving your laptop awake or paying for continuous idle cloud servers:
 ```bash
-# Automated one-step deployment: builds container, mounts Cloud Storage for SQLite, and sets CST cron triggers
+# Option A: Automated one-step deployment (dynamically resolves project & region via `gcloud config get-value`)
 ./deploy_gcp.sh
+
+# Option B: Infrastructure-as-Code via Terraform (see terraform/README.md)
+cd terraform && terraform init && terraform apply
 ```
-*Architecture:* **Cloud Run Jobs** + **Cloud Scheduler** + **Cloud Storage Volume Mount (GCS FUSE)**. Instances scale to absolute 0 between scheduled runs. Total execution time across all daily tasks is ~10 minutes/day, costing **$0.00/month** (100% within GCP Free Tier).
+*Architecture:* **Cloud Run Jobs** + **Cloud Scheduler** + **Cloud Storage Volume Mount (GCS FUSE)** + **Secret Manager**. Instances scale to absolute `0` between scheduled runs. Total execution time across all daily tasks is ~10 minutes/day, costing **$0.00/month** (100% within GCP Free Tier).
 
 ### 5. Direct CLI Commands (Advanced)
 ```bash
@@ -84,7 +87,7 @@ python -m src.cli verify-schedules
 python -m src.cli daemon
 ```
 
-### 4. Run Test Suite
+### 6. Run Test Suite
 ```bash
 pytest -v
 ```

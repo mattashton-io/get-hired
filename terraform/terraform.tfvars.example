@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (git-ignored) OR pass dynamically via TF_VAR_* environment variables:
+#   export TF_VAR_project_id="$(gcloud config get-value project)"
+#   export TF_VAR_region="$(gcloud config get-value run/region)"
+#   export TF_VAR_gemini_api_key="..."
+
+project_id         = "your-gcp-project-id"
+region             = "your-gcp-region"
+gemini_api_key     = "your-gemini-api-key"
+gemini_model       = "gemini-3.8-flash"
+candidate_email    = "Erykasmith@gmail.com"
+scheduler_timezone = "America/Chicago"
+dry_run            = "false"
+

@@ -30,24 +30,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install python dependencies
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright Chromium headless browser binary
 RUN playwright install chromium
 
-# Copy application source code and skills
+# Copy application source code, skills, and canonical persona
 COPY src/ ./src/
 COPY skills/ ./skills/
 COPY persona.md ./persona.md
-COPY config/ ./config/
 COPY pyproject.toml ./pyproject.toml
 
-# Create mount points and local directories for ledger and outputs
-RUN mkdir -p /app/data/resumes /app/data/logs
+# Copy immutable seed JSON files into /app/seed_data (preserved even when /app/data is mounted via GCS FUSE)
+RUN mkdir -p /app/seed_data /app/data/compiled_resumes /app/data/screenshots /app/data/outbox /app/data/session_states /app/config
+COPY data/master_resume.json /app/seed_data/master_resume.json
+COPY data/target_companies.json /app/seed_data/target_companies.json
+COPY data/master_resume.json /app/data/master_resume.json
+COPY data/target_companies.json /app/data/target_companies.json
 
 # Set default entrypoint
 ENTRYPOINT ["python", "-m", "src.cli"]
 CMD ["verify-schedules"]
-
