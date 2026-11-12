@@ -1,0 +1,94 @@
+# ==============================================================================
+# .gcloudignore - Controls files uploaded to Google Cloud Build
+# (Overrides .gitignore fallback so canonical persona.md & seed JSONs are built,
+#  while keeping .env, OAuth tokens, Terraform state, and .venv excluded)
+# ==============================================================================
+.gcloudignore
+.git
+.gitignore
+.dockerignore
+README.md
+LICENSE
+task.md
+deploy_gcp.sh
+run.sh
+
+# Terraform
+terraform/
+**/.terraform/
+.terraform.lock.hcl
+*.tf
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+
+# Secrets & Credentials (NEVER UPLOAD)
+.env
+.env.*
+.envrc
+credentials.json
+token.json
+*credentials*.json
+*token*.json
+client_secret*.json
+*service-account*.json
+*service_account*.json
+auth/
+config/
+*.pem
+*.key
+*.p12
+
+# Local Runtime Data (Exclude mutable DB/outputs; allow seed JSONs & persona.md)
+applicant/
+data/*
+!data/master_resume.json
+!data/target_companies.json
+!persona.md
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+
+# Python Virtual Environments & Caches
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-log.txt
+
+# Tests & Caches
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# OS & IDE
+.DS_Store
+.AppleDouble
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+

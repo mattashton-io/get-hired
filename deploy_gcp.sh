@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+# Prevent gcloud from ever hanging on interactive (y/N) prompts in non-interactive shells
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+
 # 1. Colors & Helpers
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -178,12 +181,35 @@ for seed_file in master_resume.json target_companies.json applications_ledger.db
         fi
     fi
 done
+if [[ -f "config/gmail_credentials.json" ]]; then
+    info "Syncing config/gmail_credentials.json -> gs://${BUCKET_NAME}/gmail_credentials.json for Web OAuth portal..."
+    gcloud storage cp "config/gmail_credentials.json" "gs://${BUCKET_NAME}/gmail_credentials.json" --project="$PROJECT_ID"
+fi
+if [[ -f "config/gmail_token.json" ]]; then
+    info "Syncing config/gmail_token.json -> gs://${BUCKET_NAME}/gmail_token.json for live Gmail API access..."
+    gcloud storage cp "config/gmail_token.json" "gs://${BUCKET_NAME}/gmail_token.json" --project="$PROJECT_ID"
+fi
 ok "GCS persistence volume seeded."
 
-# 7. Build and Push Container Image with Cloud Build
-info "Building container image via Cloud Build..."
-gcloud builds submit --tag "$IMAGE_NAME" --project="$PROJECT_ID" .
-ok "Container image built and pushed: $IMAGE_NAME"
+# 7. Ensure Cloud Build / Compute Default Service Account Permissions & Build Image
+PROJECT_NUM="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' --quiet)"
+COMPUTE_SA="${PROJECT_NUM}-compute@developer.gserviceaccount.com"
+info "Ensuring Cloud Build & Cloud Run default service account ($COMPUTE_SA) has required roles..."
+for cb_role in "roles/logging.logWriter" "roles/storage.objectAdmin" "roles/artifactregistry.writer"; do
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="serviceAccount:${COMPUTE_SA}" \
+        --role="$cb_role" \
+        --condition=None \
+        --quiet >/dev/null || true
+done
+
+if [[ "${SKIP_BUILD:-false}" == "true" ]]; then
+    info "SKIP_BUILD=true set; using existing image $IMAGE_NAME"
+else
+    info "Building container image via Cloud Build..."
+    gcloud builds submit --tag "$IMAGE_NAME" --project="$PROJECT_ID" --quiet .
+    ok "Container image built and pushed: $IMAGE_NAME"
+fi
 
 # 8. Create or Update Cloud Run Job with GCS Volume Mount
 info "Deploying Cloud Run Job '$JOB_NAME' in $REGION..."
@@ -195,7 +221,7 @@ COMMON_JOB_FLAGS=(
     "--memory=2Gi"
     "--max-retries=1"
     "--task-timeout=15m"
-    "--set-env-vars=^;^GEMINI_API_KEY=${GEMINI_API_KEY};GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash};GOOGLE_CLOUD_PROJECT_ID=${PROJECT_ID};GOOGLE_CLOUD_REGION=${REGION};TZ=${TIMEZONE};NOTIFY_EMAILS=${NOTIFY_EMAILS:-Erykasmith@gmail.com,ashton0801@gmail.com}"
+    "--set-env-vars=^;^GEMINI_API_KEY=${GEMINI_API_KEY};GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash};GOOGLE_CLOUD_PROJECT_ID=${PROJECT_ID};GOOGLE_CLOUD_REGION=${REGION};TZ=${TIMEZONE};NOTIFY_EMAILS=${NOTIFY_EMAILS:-Erykasmith@gmail.com,ashton0801@gmail.com};GMAIL_SENDER_EMAIL=${GMAIL_SENDER_EMAIL:-ashton0801@gmail.com};GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD:-}"
     "--add-volume=name=gcs-data,type=cloud-storage,bucket=${BUCKET_NAME}"
     "--add-volume-mount=volume=gcs-data,mount-path=/app/data"
 )
@@ -207,20 +233,47 @@ else
 fi
 ok "Cloud Run Job '$JOB_NAME' deployed with GCS FUSE mount at /app/data."
 
+# 8b. Deploy Scale-to-Zero Remote Candidate Onboarding Portal (Cloud Run Service)
+AUTH_SERVICE_NAME="get-hired-auth"
+info "Deploying Scale-to-Zero OAuth Onboarding Portal '$AUTH_SERVICE_NAME' in $REGION..."
+gcloud run deploy "$AUTH_SERVICE_NAME" \
+    --image="$IMAGE_NAME" \
+    --args="web-auth" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --min-instances=0 \
+    --max-instances=2 \
+    --cpu=1 \
+    --memory=1Gi \
+    --allow-unauthenticated \
+    --set-env-vars="^;^GEMINI_API_KEY=${GEMINI_API_KEY};GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash};GOOGLE_CLOUD_PROJECT_ID=${PROJECT_ID};GOOGLE_CLOUD_REGION=${REGION};TZ=${TIMEZONE};NOTIFY_EMAILS=${NOTIFY_EMAILS:-Erykasmith@gmail.com,ashton0801@gmail.com}" \
+    --add-volume="name=gcs-data,type=cloud-storage,bucket=${BUCKET_NAME}" \
+    --add-volume-mount="volume=gcs-data,mount-path=/app/data" \
+    --quiet
+AUTH_PORTAL_URL="$(gcloud run services describe "$AUTH_SERVICE_NAME" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
+ok "OAuth Onboarding Portal deployed (min-instances=0): ${AUTH_PORTAL_URL}"
+
 # 9. Configure Dedicated Service Account for Cloud Scheduler
 info "Configuring Service Account '$SERVICE_ACCOUNT'..."
 if ! gcloud iam service-accounts describe "$SERVICE_ACCOUNT" --project="$PROJECT_ID" &>/dev/null; then
     gcloud iam service-accounts create "$SA_NAME" \
         --display-name="Get Hired Cloud Scheduler Invoker" \
         --project="$PROJECT_ID"
+    sleep 5
 fi
 
 for role in "roles/run.invoker" "roles/run.developer"; do
-    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-        --member="serviceAccount:${SERVICE_ACCOUNT}" \
-        --role="$role" \
-        --condition=None \
-        --quiet >/dev/null
+    for attempt in 1 2 3 4 5; do
+        if gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+            --member="serviceAccount:${SERVICE_ACCOUNT}" \
+            --role="$role" \
+            --condition=None \
+            --quiet >/dev/null 2>&1; then
+            break
+        fi
+        warn "Waiting for IAM service account propagation (attempt ${attempt}/5)..."
+        sleep 3
+    done
 done
 ok "Service account IAM bindings verified."
 
@@ -251,14 +304,13 @@ print(json.dumps({'overrides': {'containerOverrides': [{'args': args}]}}))
         "--http-method=POST"
         "--oauth-service-account-email=$SERVICE_ACCOUNT"
         "--message-body=$body_json"
-        "--headers=Content-Type=application/json"
         "--quiet"
     )
 
     if gcloud scheduler jobs describe "$sched_name" --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
-        gcloud scheduler jobs update http "$sched_name" "${sched_flags[@]}"
+        gcloud scheduler jobs update http "$sched_name" "${sched_flags[@]}" --update-headers="Content-Type=application/json"
     else
-        gcloud scheduler jobs create http "$sched_name" "${sched_flags[@]}"
+        gcloud scheduler jobs create http "$sched_name" "${sched_flags[@]}" --headers="Content-Type=application/json"
     fi
     ok "Schedule '$sched_name' ($cron_expr $TIMEZONE) -> [ $cli_args ]"
 }

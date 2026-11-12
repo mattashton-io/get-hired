@@ -45,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("verify-schedules", help="Print configured CST cron triggers and exit.")
     subparsers.add_parser("daemon", help="Start the persistent APScheduler daily daemon.")
     subparsers.add_parser("auth-gmail", help="Run interactive OAuth2 consent for Erykasmith@gmail.com.")
+    subparsers.add_parser("web-auth", help="Start scale-to-zero Cloud Run Web OAuth2 onboarding server.")
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -114,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "auth-gmail":
         tok = orch.gmail.authenticate_interactive()
         print(f"Gmail OAuth2 token saved to: {tok}")
+        return 0
+
+    if args.command == "web-auth":
+        from src.web_auth import run_web_auth_server
+
+        run_web_auth_server()
         return 0
 
     return 1

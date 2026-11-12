@@ -26,12 +26,14 @@ token.json
 client_secret*.json
 *service-account*.json
 *service_account*.json
+auth/
 config/*.json
 !config/*.example.json
 *.pem
 *.key
 *.p12
 .streamlit/secrets.toml
+auth/
 
 # ==============================================================================
 # Terraform / OpenTofu Infrastructure State & Provider Caches

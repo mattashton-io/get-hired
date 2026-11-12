@@ -252,6 +252,94 @@ resource "google_cloud_run_v2_job" "runner" {
 }
 
 # ==============================================================================
+# 6b. Scale-to-Zero Remote Candidate Onboarding Portal (Cloud Run v2 Service)
+# ==============================================================================
+resource "google_cloud_run_v2_service" "auth_portal" {
+  name                = "get-hired-auth"
+  location            = var.region
+  deletion_protection = false
+  ingress             = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.job_runner.email
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 2
+    }
+
+    volumes {
+      name = "gcs-data"
+      gcs {
+        bucket    = google_storage_bucket.data_bucket.name
+        read_only = false
+      }
+    }
+
+    containers {
+      image = local.container_image
+      args  = ["web-auth"]
+
+      resources {
+        limits = {
+          cpu    = "1000m"
+          memory = "1Gi"
+        }
+      }
+
+      volume_mounts {
+        name       = "gcs-data"
+        mount_path = "/app/data"
+      }
+
+      env {
+        name  = "GEMINI_MODEL"
+        value = var.gemini_model
+      }
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT_ID"
+        value = var.project_id
+      }
+      env {
+        name  = "GOOGLE_CLOUD_REGION"
+        value = var.region
+      }
+      env {
+        name  = "CANDIDATE_EMAIL"
+        value = var.candidate_email
+      }
+      env {
+        name  = "TZ"
+        value = var.scheduler_timezone
+      }
+      env {
+        name = "GEMINI_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.gemini_api_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    google_project_service.services["run.googleapis.com"],
+    google_storage_bucket_iam_member.runner_gcs_access,
+    google_secret_manager_secret_iam_member.runner_secret_access,
+  ]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "auth_portal_public" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.auth_portal.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+# ==============================================================================
 # 7. Cloud Scheduler Triggers (America/Chicago CST Business Schedule)
 # ==============================================================================
 resource "google_cloud_scheduler_job" "triggers" {

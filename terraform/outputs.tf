@@ -23,6 +23,11 @@ output "cloud_run_job_name" {
   value       = google_cloud_run_v2_job.runner.name
 }
 
+output "oauth_onboarding_portal_url" {
+  description = "Scale-to-zero remote candidate OAuth onboarding portal URL"
+  value       = google_cloud_run_v2_service.auth_portal.uri
+}
+
 output "scheduler_jobs" {
   description = "Configured Cloud Scheduler cron triggers"
   value = {
